@@ -1,0 +1,30 @@
+app:
+  port: 8195
+  debug: true
+  gateway_key: dify-sandbox    # 网关业务接口使用的 Key
+  admin_key: xai-admin-key    # 管理接口使用的 Key
+
+max_workers: 4
+max_requests: 50
+worker_timeout: 5
+enable_network: true
+enable_preload: false
+allowed_syscalls: []
+
+proxy:
+  socks5: ''
+  http: ''
+  https: ''
+
+# 网关配置
+gateway:
+  port: 8080
+  load_balancer_strategy: "least-connections"
+  health_check_interval: 15
+  cors_enabled: true
+
+# Redis配置
+redis:
+  addr: "localhost:6379"
+  password: "develop"
+  db: 0
