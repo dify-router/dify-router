@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -58,20 +59,58 @@ func (sp *SandboxPool) healthCheckLoop() {
 
 func (sp *SandboxPool) checkInstancesHealth() {
 	for id, instance := range sp.instances {
+		// 构建完整的健康检查URL - 关键修复
+		healthURL := sp.buildHealthCheckURL(instance)
+		if healthURL == "" {
+			instance.Status = "unhealthy"
+			log.Printf("❌ Sandbox %s has invalid URL: %s", id, instance.URL)
+			sp.updateInstanceInRedis(instance)
+			continue
+		}
+
+		log.Printf("🔍 Health checking sandbox %s at %s", id, healthURL)
+
 		// 检查沙箱健康状态
 		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get(instance.URL + "/health")
-		if err != nil || resp.StatusCode != 200 {
+		resp, err := client.Get(healthURL)
+		if err != nil {
 			instance.Status = "unhealthy"
-			log.Printf("Sandbox %s is unhealthy: %v", id, err)
+			log.Printf("❌ Sandbox %s is unhealthy: %v", id, err)
 		} else {
-			instance.Status = "healthy"
-			instance.LastPing = time.Now().Unix()
+			if resp.StatusCode == 200 {
+				instance.Status = "healthy"
+				instance.LastPing = time.Now().Unix()
+				log.Printf("✅ Sandbox %s is healthy (status: %d)", id, resp.StatusCode)
+			} else {
+				instance.Status = "unhealthy"
+				log.Printf("❌ Sandbox %s returned non-200 status: %d", id, resp.StatusCode)
+			}
+			resp.Body.Close() // 记得关闭响应体
 		}
 
 		// 更新到 Redis
 		sp.updateInstanceInRedis(instance)
 	}
+}
+
+// 新增：构建健康检查URL - 这是关键的修复
+func (sp *SandboxPool) buildHealthCheckURL(instance *SandboxInstance) string {
+	if instance.URL == "" {
+		log.Printf("⚠️ Sandbox %s has empty URL", instance.ID)
+		return ""
+	}
+	
+	// 如果URL已经包含协议，直接使用
+	if strings.HasPrefix(instance.URL, "http://") || strings.HasPrefix(instance.URL, "https://") {
+		healthURL := instance.URL + "/health"
+		log.Printf("🔗 Using existing protocol URL: %s", healthURL)
+		return healthURL
+	}
+	
+	// 否则添加默认的http协议
+	healthURL := "http://" + instance.URL + "/health"
+	log.Printf("🔗 Adding HTTP protocol to URL: %s", healthURL)
+	return healthURL
 }
 
 func (sp *SandboxPool) updateInstanceInRedis(instance *SandboxInstance) {
@@ -84,6 +123,12 @@ func (sp *SandboxPool) updateInstanceInRedis(instance *SandboxInstance) {
 }
 
 func (sp *SandboxPool) RegisterInstance(instance *SandboxInstance) error {
+	// 确保URL有协议
+	if instance.URL != "" && !strings.HasPrefix(instance.URL, "http://") && !strings.HasPrefix(instance.URL, "https://") {
+		instance.URL = "http://" + instance.URL
+		log.Printf("🔗 Added protocol to new instance URL: %s", instance.URL)
+	}
+	
 	sp.instances[instance.ID] = instance
 
 	// 注册到 Redis
@@ -91,7 +136,7 @@ func (sp *SandboxPool) RegisterInstance(instance *SandboxInstance) error {
 	return nil
 }
 
-// 新增：删除沙箱实例
+// 删除沙箱实例
 func (sp *SandboxPool) RemoveInstance(instanceID string) error {
 	delete(sp.instances, instanceID)
 
@@ -99,7 +144,7 @@ func (sp *SandboxPool) RemoveInstance(instanceID string) error {
 	ctx := context.Background()
 	err := sp.redisClient.HDel(ctx, "sandbox:instances", instanceID).Err()
 	if err != nil {
-		log.Printf("Failed to remove instance from Redis: %v", err)
+		log.Printf("Failed to remove instance from Redis: %v")
 		return err
 	}
 	return nil
